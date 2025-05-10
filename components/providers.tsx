@@ -24,15 +24,16 @@ export function Providers({ children }: { children: React.ReactNode }) {
       {children}
       <ToastContainer
         position="top-right"
-        autoClose={5000}
-        hideProgressBar={false}
-        newestOnTop={false}
+        autoClose={3000}
+        hideProgressBar={true}
+        newestOnTop={true}
         closeOnClick
         rtl={false}
-        pauseOnFocusLoss
+        pauseOnFocusLoss={false}
         draggable
-        pauseOnHover
+        pauseOnHover={false}
         theme="light"
+        limit={1}
       />
     </WalletProvider>
   )

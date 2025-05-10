@@ -10,7 +10,8 @@ import { ConnectWalletButton } from "@/components/connect-wallet-button"
 import { Button } from "@/components/ui/button"
 import { toast } from "react-toastify"
 import algosdk from "algosdk"
-import { createLedControlSubscriber } from "@/lib/subscriber"
+import { createLedControlSubscriber, getMethodSelector } from "@/lib/subscriber"
+import { fetchLedState, fetchLedStateWithSDK } from "@/lib/app-state"
 
 interface TransactionData {
   applicationID: string
@@ -37,18 +38,62 @@ export default function SignPage() {
   const [ledStatus, setLedStatus] = useState<string | null>(null)
   const [recentTransactions, setRecentTransactions] = useState<AppCallTransaction[]>([])
   const [isSubscribed, setIsSubscribed] = useState(false)
+  const [methodSelectors, setMethodSelectors] = useState<{ turnOn: string; turnOff: string }>({
+    turnOn: "",
+    turnOff: "",
+  })
+  const [isFetchingState, setIsFetchingState] = useState(false)
 
   // Use refs to prevent multiple subscriptions
   const subscriberRef = useRef<{ unsubscribe: () => void } | null>(null)
   const hasSubscribedRef = useRef(false)
 
+  // Track processed transaction IDs to prevent duplicates
+  const processedTxIds = useRef<Set<string>>(new Set())
+
+  // Calculate method selectors on component mount
+  useEffect(() => {
+    const turnOnSelector = getMethodSelector("turnOn")
+    const turnOffSelector = getMethodSelector("turnOff")
+
+    setMethodSelectors({
+      turnOn: turnOnSelector,
+      turnOff: turnOffSelector,
+    })
+
+    console.log("Method selectors calculated:", {
+      turnOn: turnOnSelector,
+      turnOff: turnOffSelector,
+    })
+  }, [])
+
   useEffect(() => {
     try {
       // Get the base64 string from the URL
-      const base64json = params.base64json as string
+      let base64json = params.base64json as string
+
+      // Fix URL encoding issues with base64
+      // Replace URL-safe characters back to base64 standard characters
+      base64json = base64json.replace(/-/g, "+").replace(/_/g, "/")
+
+      // Add padding if needed
+      while (base64json.length % 4) {
+        base64json += "="
+      }
+
+      console.log("Processing base64 string:", base64json)
 
       // Decode the base64 string
-      const decodedString = atob(base64json)
+      let decodedString
+      try {
+        decodedString = atob(base64json)
+      } catch (e) {
+        console.error("Base64 decoding error:", e)
+        // Try an alternative approach for browsers that might handle base64 differently
+        decodedString = Buffer.from(base64json, "base64").toString()
+      }
+
+      console.log("Decoded string:", decodedString)
 
       // Parse the JSON
       const jsonData = JSON.parse(decodedString) as TransactionData
@@ -64,12 +109,73 @@ export default function SignPage() {
 
       setDecodedData(jsonData)
       setIsLoading(false)
+
+      // Fetch the current LED state
+      if (jsonData.applicationID) {
+        fetchCurrentLedState(Number.parseInt(jsonData.applicationID))
+      }
     } catch (err) {
       console.error("Error decoding or parsing data:", err)
       setError(err instanceof Error ? err.message : "Failed to decode or parse the data")
       setIsLoading(false)
     }
   }, [params])
+
+  // Function to fetch the current LED state
+  const fetchCurrentLedState = async (appId: number) => {
+    if (isNaN(appId) || appId <= 0) return
+
+    setIsFetchingState(true)
+    try {
+      console.log(`Fetching LED state for app ID: ${appId}`)
+
+      // Try the direct fetch method first
+      try {
+        const state = await fetchLedState(appId)
+        setLedStatus(`LED is ${state.toLowerCase()}!`)
+        console.log(`Current LED state: ${state}`)
+        return
+      } catch (directError) {
+        console.error("Direct fetch method failed:", directError)
+        // Fall back to SDK method
+      }
+
+      // Try the SDK method as fallback
+      const state = await fetchLedStateWithSDK(appId)
+      setLedStatus(`LED is ${state.toLowerCase()}!`)
+      console.log(`Current LED state: ${state}`)
+    } catch (error) {
+      console.error("Error fetching LED state:", error)
+      setLedStatus("Could not fetch LED state")
+    } finally {
+      setIsFetchingState(false)
+    }
+  }
+
+  // Function to add a transaction to the recent transactions list
+  const addTransaction = (transaction: AppCallTransaction) => {
+    // Check if this transaction ID has already been processed
+    if (processedTxIds.current.has(transaction.id)) {
+      console.log(`Transaction ${transaction.id} already processed, skipping`)
+      return
+    }
+
+    // Add to processed set
+    processedTxIds.current.add(transaction.id)
+
+    // Add to recent transactions
+    setRecentTransactions((prev) => {
+      // Check if transaction already exists in the list
+      const exists = prev.some((tx) => tx.id === transaction.id)
+      if (exists) {
+        console.log(`Transaction ${transaction.id} already in list, skipping`)
+        return prev
+      }
+
+      // Add new transaction to the beginning of the list
+      return [transaction, ...prev].slice(0, 5)
+    })
+  }
 
   // Subscribe to app calls for the specified application ID
   useEffect(() => {
@@ -90,11 +196,14 @@ export default function SignPage() {
         const subscriber = createLedControlSubscriber(appId, (transaction, methodName) => {
           console.log(`Received transaction:`, transaction)
 
-          // Determine LED state from method name
-          const state = methodName === "turnOn" ? "on" : "off"
-
-          // Update the LED status
-          setLedStatus(state === "on" ? "LED is on!" : "LED is off!")
+          // Update LED status based on the method
+          if (methodName === "turnOn") {
+            setLedStatus("LED is on!")
+            // No toast notification
+          } else if (methodName === "turnOff") {
+            setLedStatus("LED is off!")
+            // No toast notification
+          }
 
           // Format the transaction for display
           const formattedTransaction: AppCallTransaction = {
@@ -103,21 +212,30 @@ export default function SignPage() {
             round: transaction.confirmedRound || "Pending",
             timestamp: new Date().toLocaleTimeString(),
             methodName: methodName,
-            status: state === "on" ? "LED is on!" : "LED is off!",
+            // Set status based on method
+            status: methodName === "turnOn" ? "LED is on!" : methodName === "turnOff" ? "LED is off!" : "Unknown",
           }
 
-          // Add to recent transactions
-          setRecentTransactions((prev) => [formattedTransaction, ...prev].slice(0, 5))
+          // Add to recent transactions (with duplicate prevention)
+          addTransaction(formattedTransaction)
 
-          toast.info(`LED turned ${state.toUpperCase()} via transaction ${transaction.id.slice(0, 8)}...`)
+          // Refresh the LED state after a transaction is detected
+          fetchCurrentLedState(appId)
         })
 
         subscriberRef.current = subscriber
         setIsSubscribed(true)
-        toast.success(`Subscribed to app calls for application ID: ${appId}`)
+        // Only show one toast for subscription success
+        toast.success(`Subscribed to app calls for application ID: ${appId}`, {
+          autoClose: 3000,
+          hideProgressBar: true,
+        })
       } catch (err) {
         console.error("Error setting up subscription:", err)
-        toast.error("Failed to subscribe to app calls")
+        toast.error("Failed to subscribe to app calls", {
+          autoClose: 3000,
+          hideProgressBar: true,
+        })
         hasSubscribedRef.current = false
       }
     }
@@ -139,7 +257,10 @@ export default function SignPage() {
     if (!decodedData) return
 
     if (!activeAddress || !activeAccount || !transactionSigner) {
-      toast.error("Please connect your wallet first")
+      toast.error("Please connect your wallet first", {
+        autoClose: 3000,
+        hideProgressBar: true,
+      })
       return
     }
 
@@ -180,13 +301,19 @@ export default function SignPage() {
         boxes: [],
       })
 
+      // Log the method selector being used
+      console.log(
+        `Using method selector for ${decodedData.command}:`,
+        Buffer.from(method.getSelector()).toString("hex"),
+      )
+
       // Sign the transaction
       const signedTxns = await transactionSigner([appCallTxn], [0])
 
       // Send the transaction
       const { txid } = await algodClient.sendRawTransaction(signedTxns).do()
 
-      // Set transaction ID and LED status
+      // Set transaction ID and LED status based on command
       setTxId(txid)
       setLedStatus(decodedData.command === "turnOn" ? "LED is on!" : "LED is off!")
 
@@ -200,14 +327,34 @@ export default function SignPage() {
         status: decodedData.command === "turnOn" ? "LED is on!" : "LED is off!",
       }
 
-      setRecentTransactions((prev) => [newTransaction, ...prev].slice(0, 5))
+      // Add to recent transactions (with duplicate prevention)
+      addTransaction(newTransaction)
 
-      toast.success(`Transaction sent successfully! ${decodedData.command === "turnOn" ? "LED is on!" : "LED is off!"}`)
+      // Only show one toast for transaction success
+      toast.success(`Transaction sent successfully!`, {
+        autoClose: 3000,
+        hideProgressBar: true,
+      })
+
+      // Wait a moment and then fetch the updated LED state
+      setTimeout(() => {
+        fetchCurrentLedState(appId)
+      }, 5000) // Wait 5 seconds for the transaction to be confirmed
     } catch (err) {
       console.error("Error signing or sending transaction:", err)
-      toast.error(err instanceof Error ? err.message : "Failed to sign or send transaction")
+      toast.error("Failed to sign or send transaction", {
+        autoClose: 3000,
+        hideProgressBar: true,
+      })
     } finally {
       setIsProcessing(false)
+    }
+  }
+
+  // Function to refresh the LED state
+  const refreshLedState = () => {
+    if (decodedData?.applicationID) {
+      fetchCurrentLedState(Number.parseInt(decodedData.applicationID))
     }
   }
 
@@ -257,6 +404,12 @@ export default function SignPage() {
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start border-b pb-4">
+                  <div className="font-medium">Method Selector</div>
+                  <div className="md:col-span-2 break-all font-mono">
+                    {decodedData.command === "turnOn" ? methodSelectors.turnOn : methodSelectors.turnOff}
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start border-b pb-4">
                   <div className="font-medium">Subscription Status</div>
                   <div className="md:col-span-2 break-all">
                     {isSubscribed ? (
@@ -271,11 +424,42 @@ export default function SignPage() {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start border-b pb-4">
                   <div className="font-medium">Current LED Status</div>
-                  <div className="md:col-span-2 break-all">
-                    {ledStatus ? (
-                      <span className="font-bold">{ledStatus}</span>
+                  <div className="md:col-span-2 break-all flex items-center">
+                    {isFetchingState ? (
+                      <div className="flex items-center">
+                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        <span>Fetching LED state...</span>
+                      </div>
+                    ) : ledStatus ? (
+                      <div className="flex items-center">
+                        <span className={`font-bold ${ledStatus.includes("on") ? "text-green-600" : "text-red-600"}`}>
+                          {ledStatus}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={refreshLedState}
+                          className="ml-2"
+                          disabled={isFetchingState}
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          <span className="sr-only">Refresh LED state</span>
+                        </Button>
+                      </div>
                     ) : (
-                      <span className="text-gray-500">Unknown (waiting for transaction)</span>
+                      <div className="flex items-center">
+                        <span className="text-gray-500">Unknown</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={refreshLedState}
+                          className="ml-2"
+                          disabled={isFetchingState}
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          <span className="sr-only">Refresh LED state</span>
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -294,7 +478,9 @@ export default function SignPage() {
               <p>
                 <strong>Transaction ID:</strong> {txId}
               </p>
-              <p className="mt-2 text-lg font-bold">{ledStatus}</p>
+              <p className={`mt-2 text-lg font-bold ${ledStatus?.includes("on") ? "text-green-600" : "text-red-600"}`}>
+                {ledStatus}
+              </p>
             </div>
           </AlertDescription>
         </Alert>
@@ -338,7 +524,7 @@ export default function SignPage() {
                       <td className="py-2 px-2">{tx.timestamp}</td>
                       <td className="py-2 px-2 font-mono">
                         <a
-                          href={`https://lora.algokit.io/testnet/transaction/${tx.id}`}
+                          href={`https://testnet.algoexplorer.io/tx/${tx.id}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-blue-600 hover:underline"
@@ -348,7 +534,7 @@ export default function SignPage() {
                       </td>
                       <td className="py-2 px-2 font-mono">
                         <a
-                          href={`https://lora.algokit.io/testnet/account/${tx.sender}`}
+                          href={`https://testnet.algoexplorer.io/address/${tx.sender}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-blue-600 hover:underline"

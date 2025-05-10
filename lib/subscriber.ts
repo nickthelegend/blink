@@ -10,13 +10,8 @@ const indexerClient = new algosdk.Indexer("", "https://testnet-idx.algonode.clou
 // In-memory watermark storage (for demo purposes)
 const watermarks = new Map<number, bigint>()
 
-// Method selectors for turnOn and turnOff
-// These are the first 4 bytes of the hash of the method signature
-const METHOD_SELECTORS = {
-  // These are examples - the actual values may be different
-  TURN_ON: ["f78f4f2d", "7475726e4f6e"], // "turnOn" in hex is 7475726e4f6e
-  TURN_OFF: ["31db4745", "7475726e4f6666"], // "turnOff" in hex is 7475726e4f6666
-}
+// Track processed transaction IDs to prevent duplicates
+const processedTransactions = new Set<string>()
 
 /**
  * Create a subscriber for LED control app calls
@@ -30,12 +25,29 @@ export const createLedControlSubscriber = (
 ) => {
   console.log(`Creating subscriber for app ID: ${appId}`)
 
-  // Create the subscriber with a filter for app calls to the specified app ID
+  // Create the subscriber with filters for specific method signatures
   const subscriber = new AlgorandSubscriber(
     {
       filters: [
         {
-          name: "app-call",
+          name: "turn-on",
+          filter: {
+            type: TransactionType.appl,
+            appId: BigInt(appId),
+            methodSignature: "turnOn()void",
+          },
+        },
+        {
+          name: "turn-off",
+          filter: {
+            type: TransactionType.appl,
+            appId: BigInt(appId),
+            methodSignature: "turnOff()void",
+          },
+        },
+        // Fallback filter for any app calls to this app ID
+        {
+          name: "app-call-fallback",
           filter: {
             type: TransactionType.appl,
             appId: BigInt(appId),
@@ -57,47 +69,75 @@ export const createLedControlSubscriber = (
     indexerClient,
   )
 
-  // Set up the subscription to the app call filter
-  subscriber.on("app-call", (transaction) => {
-    console.log(`Detected app call transaction:`, transaction)
-
-    try {
-      // Extract the application transaction details
-      const appTxn = transaction.applicationTransaction
-
-      if (!appTxn || !appTxn.applicationArgs || appTxn.applicationArgs.length === 0) {
-        console.log("Transaction doesn't have application args")
-        return
-      }
-
-      // Get the first application argument (method selector)
-      const methodSelector = Buffer.from(appTxn.applicationArgs[0]).toString("hex")
-      console.log(`Method selector: ${methodSelector}`)
-
-      // Determine if it's turnOn or turnOff
-      let methodName = "unknown"
-
-      if (METHOD_SELECTORS.TURN_ON.some((selector) => methodSelector.includes(selector))) {
-        methodName = "turnOn"
-      } else if (METHOD_SELECTORS.TURN_OFF.some((selector) => methodSelector.includes(selector))) {
-        methodName = "turnOff"
-      }
-
-      console.log(`Detected method: ${methodName}`)
-
-      // Call the callback with the transaction and method name
-      onTransaction(
-        {
-          id: transaction.id,
-          sender: transaction.sender,
-          confirmedRound: transaction.confirmedRound,
-          applicationTransaction: appTxn,
-        },
-        methodName,
-      )
-    } catch (error) {
-      console.error("Error processing LED control transaction:", error)
+  // Helper function to process transaction and prevent duplicates
+  const processTransaction = (transaction: any, methodName: string) => {
+    // Check if we've already processed this transaction
+    if (processedTransactions.has(transaction.id)) {
+      console.log(`Transaction ${transaction.id} already processed, skipping`)
+      return
     }
+
+    // Add to processed set
+    processedTransactions.add(transaction.id)
+
+    // Call the callback
+    onTransaction(
+      {
+        id: transaction.id,
+        sender: transaction.sender,
+        confirmedRound: transaction.confirmedRound,
+        applicationTransaction: transaction.applicationTransaction,
+      },
+      methodName,
+    )
+  }
+
+  // Set up the subscription to the turnOn method
+  subscriber.on("turn-on", (transaction) => {
+    console.log(`Detected turnOn transaction:`, transaction)
+    processTransaction(transaction, "turnOn")
+  })
+
+  // Set up the subscription to the turnOff method
+  subscriber.on("turn-off", (transaction) => {
+    console.log(`Detected turnOff transaction:`, transaction)
+    processTransaction(transaction, "turnOff")
+  })
+
+  // Set up the subscription to any other app calls (fallback)
+  subscriber.on("app-call-fallback", (transaction) => {
+    // Skip if we've already processed this transaction via a specific method filter
+    if (processedTransactions.has(transaction.id)) {
+      return
+    }
+
+    console.log(`Detected other app call transaction:`, transaction)
+
+    // Try to determine the method from the application args
+    let methodName = "unknown"
+    try {
+      if (
+        transaction.applicationTransaction &&
+        transaction.applicationTransaction.applicationArgs &&
+        transaction.applicationTransaction.applicationArgs.length > 0
+      ) {
+        const methodArg = Buffer.from(transaction.applicationTransaction.applicationArgs[0]).toString("hex")
+
+        // Log the method selector for debugging
+        console.log(`Method selector from args: ${methodArg}`)
+
+        // Try to match with known method selectors
+        if (methodArg === getMethodSelector("turnOn")) {
+          methodName = "turnOn"
+        } else if (methodArg === getMethodSelector("turnOff")) {
+          methodName = "turnOff"
+        }
+      }
+    } catch (error) {
+      console.error("Error extracting method name:", error)
+    }
+
+    processTransaction(transaction, methodName)
   })
 
   // Set up poll handling to log information about each poll
@@ -126,8 +166,27 @@ export const createLedControlSubscriber = (
   // Return the subscriber and a function to stop it
   return {
     unsubscribe: () => {
-      subscriber.stop("SAD")
+      subscriber.stop("Stopped")
       console.log(`Stopped subscriber for app ID: ${appId}`)
     },
   }
 }
+
+/**
+ * Get the method selector for a given method name and signature
+ * This can be used to debug and find the correct method selectors
+ */
+export const getMethodSelector = (methodName: string, args: string[] = []): string => {
+  const method = new algosdk.ABIMethod({
+    name: methodName,
+    args: args.map((arg) => ({ type: arg })),
+    returns: { type: "void" },
+  })
+
+  const selector = method.getSelector()
+  return Buffer.from(selector).toString("hex")
+}
+
+// Log the method selectors for turnOn and turnOff for debugging
+console.log("turnOn method selector:", getMethodSelector("turnOn"))
+console.log("turnOff method selector:", getMethodSelector("turnOff"))

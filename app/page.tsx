@@ -2,20 +2,25 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 
 export default function Home() {
-  // Example base64 encoded JSON for LED control
-  const turnOnExample = btoa(
-    JSON.stringify({
-      applicationID: "739285260",
-      command: "turnOn",
-    }),
-  )
+  // Function to safely encode JSON for URL
+  const safeBase64Encode = (obj: any): string => {
+    const jsonString = JSON.stringify(obj)
+    // First encode as base64
+    const base64 = btoa(jsonString)
+    // Then make it URL safe by replacing characters that might cause issues
+    return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+  }
 
-  const turnOffExample = btoa(
-    JSON.stringify({
-      applicationID: "739285260",
-      command: "turnOff",
-    }),
-  )
+  // Example base64 encoded JSON for LED control
+  const turnOnExample = safeBase64Encode({
+    applicationID: "739285260",
+    command: "turnOn",
+  })
+
+  const turnOffExample = safeBase64Encode({
+    applicationID: "739285260",
+    command: "turnOff",
+  })
 
   return (
     <div className="container mx-auto py-12">
