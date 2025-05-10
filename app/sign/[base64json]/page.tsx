@@ -12,6 +12,7 @@ import { toast } from "react-toastify"
 import algosdk from "algosdk"
 import { createLedControlSubscriber, getMethodSelector } from "@/lib/subscriber"
 import { fetchLedState, fetchLedStateWithSDK } from "@/lib/app-state"
+import { broadcastLedState } from "@/lib/supabase"
 
 // Define the TransactionData interface
 interface TransactionData {
@@ -46,6 +47,9 @@ export default function SignPage() {
     turnOff: "",
   })
   const [isFetchingState, setIsFetchingState] = useState(false)
+
+  // Track the current transaction ID to avoid duplicate broadcasts
+  const currentTxIdRef = useRef<string | null>(null)
 
   // Use refs to prevent multiple subscriptions
   const subscriberRef = useRef<{ unsubscribe: () => void } | null>(null)
@@ -214,16 +218,16 @@ export default function SignPage() {
         console.log(`Setting up subscription for app ID: ${appId}`)
 
         // Create a subscriber for LED control app calls
-        const subscriber = createLedControlSubscriber(appId, (transaction, methodName) => {
+        const subscriber = createLedControlSubscriber(appId, async (transaction, methodName) => {
           console.log(`Received transaction:`, transaction)
 
           // Update LED status based on the method
           if (methodName === "turnOn") {
             setLedStatus("LED is on!")
-            // No toast notification
+            // No broadcast here - only broadcast for the current transaction
           } else if (methodName === "turnOff") {
             setLedStatus("LED is off!")
-            // No toast notification
+            // No broadcast here - only broadcast for the current transaction
           }
 
           // Format the transaction for display
@@ -334,6 +338,15 @@ export default function SignPage() {
 
       // Send the transaction
       const { txid } = await algodClient.sendRawTransaction(signedTxns).do()
+
+      // Store the current transaction ID to avoid duplicate broadcasts
+      currentTxIdRef.current = txid
+
+      // Immediately broadcast the LED state change after successful transaction submission
+      // This is the ONLY place where we broadcast
+      console.log("Transaction sent successfully, broadcasting state change...")
+      const eventName = decodedData.command === "turnOn" ? "ledOn" : "ledOff"
+      await broadcastLedState(eventName, txid, activeAddress)
 
       // Set transaction ID and LED status based on command
       setTxId(txid)
