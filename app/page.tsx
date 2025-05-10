@@ -5,14 +5,14 @@ export default function Home() {
   // Example base64 encoded JSON for LED control
   const turnOnExample = btoa(
     JSON.stringify({
-      applicationID: "123456789",
+      applicationID: "739285260",
       command: "turnOn",
     }),
   )
 
   const turnOffExample = btoa(
     JSON.stringify({
-      applicationID: "123456789",
+      applicationID: "739285260",
       command: "turnOff",
     }),
   )
