@@ -87,6 +87,7 @@ export const createLedControlSubscriber = (
         sender: transaction.sender,
         confirmedRound: transaction.confirmedRound,
         applicationTransaction: transaction.applicationTransaction,
+        intraRoundOffset: transaction.intraRoundOffset || 0,
       },
       methodName,
     )
@@ -166,7 +167,7 @@ export const createLedControlSubscriber = (
   // Return the subscriber and a function to stop it
   return {
     unsubscribe: () => {
-      subscriber.stop("Stopped")
+      subscriber.stop("Stop")
       console.log(`Stopped subscriber for app ID: ${appId}`)
     },
   }

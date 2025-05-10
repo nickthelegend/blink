@@ -13,11 +13,13 @@ import algosdk from "algosdk"
 import { createLedControlSubscriber, getMethodSelector } from "@/lib/subscriber"
 import { fetchLedState, fetchLedStateWithSDK } from "@/lib/app-state"
 
+// Define the TransactionData interface
 interface TransactionData {
   applicationID: string
-  command: "turnOn" | "turnOff"
+  command: string
 }
 
+// Update the AppCallTransaction interface to include intraRoundOffset
 interface AppCallTransaction {
   id: string
   sender: string
@@ -25,6 +27,7 @@ interface AppCallTransaction {
   timestamp: string
   methodName?: string
   status?: string
+  intraRoundOffset?: number
 }
 
 export default function SignPage() {
@@ -172,8 +175,26 @@ export default function SignPage() {
         return prev
       }
 
-      // Add new transaction to the beginning of the list
-      return [transaction, ...prev].slice(0, 5)
+      // Add new transaction to the list
+      const newTransactions = [transaction, ...prev]
+
+      // Sort transactions with most recent at the top
+      // For transactions with numeric rounds, sort by round (descending)
+      // For "Pending" transactions, place them at the top
+      return newTransactions
+        .sort((a, b) => {
+          // If either transaction is "Pending", it should be at the top
+          if (a.round === "Pending") return -1
+          if (b.round === "Pending") return 1
+
+          // If both have numeric rounds, sort by round (descending)
+          const roundA = typeof a.round === "number" ? a.round : Number.parseInt(a.round as string)
+          const roundB = typeof b.round === "number" ? b.round : Number.parseInt(b.round as string)
+
+          // Sort by round in descending order (higher round = more recent)
+          return roundB - roundA
+        })
+        .slice(0, 5) // Keep only the 5 most recent transactions
     })
   }
 
@@ -214,6 +235,7 @@ export default function SignPage() {
             methodName: methodName,
             // Set status based on method
             status: methodName === "turnOn" ? "LED is on!" : methodName === "turnOff" ? "LED is off!" : "Unknown",
+            intraRoundOffset: transaction.intraRoundOffset || 0,
           }
 
           // Add to recent transactions (with duplicate prevention)
@@ -325,6 +347,7 @@ export default function SignPage() {
         timestamp: new Date().toLocaleTimeString(),
         methodName: decodedData.command,
         status: decodedData.command === "turnOn" ? "LED is on!" : "LED is off!",
+        intraRoundOffset: 0, // Default value for new transactions
       }
 
       // Add to recent transactions (with duplicate prevention)
@@ -524,7 +547,7 @@ export default function SignPage() {
                       <td className="py-2 px-2">{tx.timestamp}</td>
                       <td className="py-2 px-2 font-mono">
                         <a
-                          href={`https://testnet.algoexplorer.io/tx/${tx.id}`}
+                          href={`https://lora.algokit.io/testnet/transaction/${tx.id}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-blue-600 hover:underline"
@@ -534,7 +557,7 @@ export default function SignPage() {
                       </td>
                       <td className="py-2 px-2 font-mono">
                         <a
-                          href={`https://testnet.algoexplorer.io/address/${tx.sender}`}
+                          href={`https://lora.algokit.io/testnet/account/${tx.sender}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-blue-600 hover:underline"
